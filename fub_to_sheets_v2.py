@@ -61,6 +61,39 @@ class Config:
     ENABLE_CACHE = os.getenv("ENABLE_CACHE", "true").lower() == "true"
     CACHE_MAX_AGE_MINUTES = int(os.getenv("CACHE_MAX_AGE_MINUTES", "30"))
     
+# Scoring Weights - Heat Score
+    HEAT_WEIGHT_WEBSITE_VISIT = float(os.getenv("HEAT_WEIGHT_WEBSITE_VISIT", "1.5"))
+    HEAT_WEIGHT_PROPERTY_VIEWED = float(os.getenv("HEAT_WEIGHT_PROPERTY_VIEWED", "3.0"))
+    HEAT_WEIGHT_PROPERTY_FAVORITED = float(os.getenv("HEAT_WEIGHT_PROPERTY_FAVORITED", "5.0"))
+    HEAT_WEIGHT_PROPERTY_SHARED = float(os.getenv("HEAT_WEIGHT_PROPERTY_SHARED", "1.5"))
+    HEAT_WEIGHT_CALL_INBOUND = float(os.getenv("HEAT_WEIGHT_CALL_INBOUND", "5.0"))
+    HEAT_WEIGHT_TEXT_INBOUND = float(os.getenv("HEAT_WEIGHT_TEXT_INBOUND", "3.0"))
+    
+    # Scoring Weights - Recency Bonuses
+    RECENCY_BONUS_0_3_DAYS = int(os.getenv("RECENCY_BONUS_0_3_DAYS", "25"))
+    RECENCY_BONUS_4_7_DAYS = int(os.getenv("RECENCY_BONUS_4_7_DAYS", "15"))
+    RECENCY_BONUS_8_14_DAYS = int(os.getenv("RECENCY_BONUS_8_14_DAYS", "10"))
+    RECENCY_BONUS_15_30_DAYS = int(os.getenv("RECENCY_BONUS_15_30_DAYS", "5"))
+    
+    # Scoring Weights - Priority Composite
+    PRIORITY_WEIGHT_HEAT = float(os.getenv("PRIORITY_WEIGHT_HEAT", "0.50"))
+    PRIORITY_WEIGHT_VALUE = float(os.getenv("PRIORITY_WEIGHT_VALUE", "0.20"))
+    PRIORITY_WEIGHT_RELATIONSHIP = float(os.getenv("PRIORITY_WEIGHT_RELATIONSHIP", "0.30"))
+    
+    # Scoring Weights - Stage Multipliers
+    STAGE_MULTIPLIER_HOT_LEAD = float(os.getenv("STAGE_MULTIPLIER_HOT_LEAD", "1.3"))
+    STAGE_MULTIPLIER_ACTIVE_BUYER = float(os.getenv("STAGE_MULTIPLIER_ACTIVE_BUYER", "1.2"))
+    STAGE_MULTIPLIER_ACTIVE_SELLER = float(os.getenv("STAGE_MULTIPLIER_ACTIVE_SELLER", "1.2"))
+    STAGE_MULTIPLIER_NURTURE = float(os.getenv("STAGE_MULTIPLIER_NURTURE", "1.0"))
+    STAGE_MULTIPLIER_NEW_LEAD = float(os.getenv("STAGE_MULTIPLIER_NEW_LEAD", "0.9"))
+    STAGE_MULTIPLIER_COLD = float(os.getenv("STAGE_MULTIPLIER_COLD", "0.7"))
+    STAGE_MULTIPLIER_CLOSED = float(os.getenv("STAGE_MULTIPLIER_CLOSED", "0.0"))
+    STAGE_MULTIPLIER_TRASH = float(os.getenv("STAGE_MULTIPLIER_TRASH", "0.0"))
+    
+    # Call List Settings
+    CALL_LIST_MIN_PRIORITY = int(os.getenv("CALL_LIST_MIN_PRIORITY", "45"))
+    CALL_LIST_MAX_ROWS = int(os.getenv("CALL_LIST_MAX_ROWS", "50"))
+
     @classmethod
     def validate(cls):
         """Validate required configuration"""
@@ -422,46 +455,45 @@ class FUBClient:
 # =========================================================================
 
 class ScoringConfig:
-    """Configurable weights for lead scoring"""
+    """Configurable weights for lead scoring - now reads from environment"""
     
-    # Heat Score Weights
+    # Heat Score Weights - loaded from Config
     HEAT_WEIGHTS = {
-        "website_visit": 2.0,
-        "property_viewed": 3.0,
-        "property_favorited": 4.0,
-        "property_shared": 2.0,
-        "call_inbound": 3.0,
-        "text_inbound": 3.0,
+        "website_visit": Config.HEAT_WEIGHT_WEBSITE_VISIT,
+        "property_viewed": Config.HEAT_WEIGHT_PROPERTY_VIEWED,
+        "property_favorited": Config.HEAT_WEIGHT_PROPERTY_FAVORITED,
+        "property_shared": Config.HEAT_WEIGHT_PROPERTY_SHARED,
+        "call_inbound": Config.HEAT_WEIGHT_CALL_INBOUND,
+        "text_inbound": Config.HEAT_WEIGHT_TEXT_INBOUND,
     }
     
-    # Recency Bonuses (days -> bonus points)
+    # Recency Bonuses (days -> bonus points) - loaded from Config
     RECENCY_TIERS = [
-        (3, 20),
-        (7, 15),
-        (14, 10),
-        (30, 5),
+        (3, Config.RECENCY_BONUS_0_3_DAYS),
+        (7, Config.RECENCY_BONUS_4_7_DAYS),
+        (14, Config.RECENCY_BONUS_8_14_DAYS),
+        (30, Config.RECENCY_BONUS_15_30_DAYS),
         (float('inf'), 0)
     ]
     
-    # Priority Composite Weights
+    # Priority Composite Weights - loaded from Config
     PRIORITY_WEIGHTS = {
-        "heat": 0.45,
-        "value": 0.25,
-        "relationship": 0.30,
+        "heat": Config.PRIORITY_WEIGHT_HEAT,
+        "value": Config.PRIORITY_WEIGHT_VALUE,
+        "relationship": Config.PRIORITY_WEIGHT_RELATIONSHIP,
     }
     
-    # Stage Multipliers
+    # Stage Multipliers - loaded from Config
     STAGE_MULTIPLIERS = {
-        "Hot Lead": 1.3,
-        "Active Buyer": 1.2,
-        "Active Seller": 1.2,
-        "Nurture": 1.0,
-        "New Lead": 0.9,
-        "Cold": 0.7,
-        "Closed": 0.0,
-        "Trash": 0.0,
+        "Hot Lead": Config.STAGE_MULTIPLIER_HOT_LEAD,
+        "Active Buyer": Config.STAGE_MULTIPLIER_ACTIVE_BUYER,
+        "Active Seller": Config.STAGE_MULTIPLIER_ACTIVE_SELLER,
+        "Nurture": Config.STAGE_MULTIPLIER_NURTURE,
+        "New Lead": Config.STAGE_MULTIPLIER_NEW_LEAD,
+        "Cold": Config.STAGE_MULTIPLIER_COLD,
+        "Closed": Config.STAGE_MULTIPLIER_CLOSED,
+        "Trash": Config.STAGE_MULTIPLIER_TRASH,
     }
-
 
 class LeadScorer:
     """Enhanced lead scoring engine"""
@@ -1060,9 +1092,14 @@ def build_top_n_by_column(
 
 def build_call_list_rows(
     contact_rows: List[List],
-    max_rows: int = 50
+    max_rows: int = None
 ) -> List[List]:
+
     """Build daily call list"""
+
+    if max_rows is None:
+        max_rows = Config.CALL_LIST_MAX_ROWS
+    
     logger.info("Building call list...")
     
     idx = {name: i for i, name in enumerate(CONTACTS_HEADER)}
@@ -1087,7 +1124,7 @@ def build_call_list_rows(
         except (ValueError, TypeError):
             prio = 0.0
         
-        if prio < 45:
+        if prio < Config.CALL_LIST_MIN_PRIORITY:
             continue
         
         # Next action filter
@@ -1387,7 +1424,7 @@ def main():
         format_contacts_sheet(sh, contacts_ws, len(contact_rows))
         
         # Build and write call list
-        call_list_rows = build_call_list_rows(contact_rows, max_rows=50)
+        call_list_rows = build_call_list_rows(contact_rows)
         call_list_ws = get_or_create_worksheet(sh, "Call List Today")
         write_table_to_worksheet(call_list_ws, CONTACTS_HEADER, call_list_rows)
         
