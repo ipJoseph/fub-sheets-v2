@@ -1,3 +1,4 @@
+
 """
 FUB to Sheets - Version 2.0
 Complete rewrite with enhanced features, security, and maintainability
@@ -509,7 +510,8 @@ class LeadScorer:
         properties_shared: int,
         calls_inbound: int,
         texts_inbound: int,
-        days_since_last_touch: int
+        days_since_last_touch: int,
+        intent_signals: Dict = None
     ) -> Tuple[float, Dict]:
         """Calculate heat score with breakdown"""
         w = self.config.HEAT_WEIGHTS
@@ -530,17 +532,41 @@ class LeadScorer:
                 recency_bonus = bonus
                 break
         
-        raw_score = engagement + recency_bonus
+
+        # Intent multiplier
+        intent_multiplier = 1.0
+        intent_flags = []
+                    
+        if intent_signals:
+            if intent_signals.get("repeat_property_views"):
+                intent_multiplier *= 1.15
+                intent_flags.append("repeat_views")
+            
+            if intent_signals.get("high_favorite_count"):
+                intent_multiplier *= 1.10
+                intent_flags.append("high_favorites")
+            
+            if intent_signals.get("recent_activity_burst"):
+                intent_multiplier *= 1.20
+                intent_flags.append("activity_burst")
+            
+            if intent_signals.get("active_property_sharing"):
+                intent_multiplier *= 1.05
+                intent_flags.append("sharing")
+        
+        raw_score = (engagement + recency_bonus) * intent_multiplier
         final_score = max(0, min(100, round(raw_score, 1)))
         
         breakdown = {
             "engagement": round(engagement, 1),
             "recency_bonus": recency_bonus,
+            "intent_multiplier": round(intent_multiplier, 2),
+            "intent_signals": intent_flags,
             "final_score": final_score
         }
         
         return final_score, breakdown
-    
+                        
     def calculate_value_score(
         self,
         avg_price_viewed: float,
@@ -740,12 +766,15 @@ def build_person_stats(
         if not pid:
             continue
         
-        direction = call.get("direction", "").lower()
-        if direction == "outbound":
-            stats[pid]["calls_outbound"] += 1
-        elif direction == "inbound":
+        pid = str(pid)  # Convert to string for consistency
+        
+        # FUB uses 'isIncoming' not 'direction'
+        is_incoming = call.get("isIncoming")
+        if is_incoming is True:
             stats[pid]["calls_inbound"] += 1
-    
+        elif is_incoming is False:
+            stats[pid]["calls_outbound"] += 1
+
     # Process texts
     for text in texts:
         pid = text.get("personId")
@@ -764,10 +793,15 @@ def build_person_stats(
         if not pid:
             continue
         
-        event_type = event.get("type", "")
+        # Ensure pid is string for consistency
+        pid = str(pid)
+        
+        # Normalize event type (FUB uses "Viewed Property" not "property_viewed")
+        event_type_raw = event.get("type", "")
+        event_type = event_type_raw.lower().replace(" ", "_")
         event_time = parse_datetime_safe(event.get("created"))
         
-        if event_type == "website":
+        if event_type == "visited_website":
             stats[pid]["website_visits"] += 1
             if event_time and event_time >= seven_days_ago:
                 stats[pid]["website_visits_last_7"] += 1
@@ -775,24 +809,36 @@ def build_person_stats(
                 if stats[pid]["last_website_visit"] is None or event_time > stats[pid]["last_website_visit"]:
                     stats[pid]["last_website_visit"] = event_time
         
-        elif event_type == "property_viewed":
+        elif event_type == "viewed_property":
             stats[pid]["properties_viewed"] += 1
             if event_time and event_time >= seven_days_ago:
                 stats[pid]["properties_viewed_last_7"] += 1
         
-        elif event_type == "property_favorited":
+        elif event_type == "saved_property":
             stats[pid]["properties_favorited"] += 1
         
-        elif event_type == "property_shared":
+        elif event_type == "saved_property_search":
             stats[pid]["properties_shared"] += 1
     
     # Calculate average price and std dev per person
     for event in events:
         pid = event.get("personId")
-        if not pid or event.get("type") != "property_viewed":
+        if not pid:
             continue
         
-        price = event.get("propertyListPrice")
+        pid = str(pid)
+        event_type = event.get("type", "").lower().replace(" ", "_")
+        
+        if event_type != "viewed_property":
+            continue
+        
+        # Extract price from property object
+        property_obj = event.get("property", {})
+        if isinstance(property_obj, dict):
+            price = property_obj.get("price")
+        else:
+            price = None
+        
         if price:
             try:
                 price_val = float(price)
@@ -818,6 +864,77 @@ def build_person_stats(
         if data["last_website_visit"]:
             data["last_website_visit"] = data["last_website_visit"].isoformat()
     
+    # === INTENT SIGNAL DETECTION ===
+    # Track property views for repeat detection
+    property_views_by_person = defaultdict(lambda: defaultdict(int))
+    activity_timestamps_by_person = defaultdict(list)
+    
+    for event in events:
+        pid = event.get("personId")
+        if not pid:
+            continue
+        
+        event_time = parse_datetime_safe(event.get("created"))
+        event_type = event.get("type", "")
+        
+        # Track property views per property
+        if event_type == "viewed_property":
+            property_obj = event.get("property", {})
+            if isinstance(property_obj, dict):
+                property_id = property_obj.get("id")
+                if property_id:
+                    property_views_by_person[pid][property_id] += 1
+
+        # Track all activity timestamps for burst detection
+        if event_time:
+            activity_timestamps_by_person[pid].append(event_time)
+    
+    # Compute intent signals
+    for pid, data in stats.items():
+        # Signal 1: Repeat property views
+        if pid in property_views_by_person:
+            max_views = max(property_views_by_person[pid].values()) if property_views_by_person[pid] else 0
+            data["repeat_property_views"] = max_views >= 2
+            data["max_property_view_count"] = max_views
+        else:
+            data["repeat_property_views"] = False
+            data["max_property_view_count"] = 0
+        
+        # Signal 2: High favorite count
+        data["high_favorite_count"] = data.get("properties_favorited", 0) >= 3
+        
+        # Signal 3: Recent activity burst (3+ actions in 24 hours)
+        data["recent_activity_burst"] = False
+        if pid in activity_timestamps_by_person:
+            timestamps = sorted(activity_timestamps_by_person[pid], reverse=True)
+            if len(timestamps) >= 3:
+                # Check if top 3 most recent are within 24 hours
+                most_recent = timestamps[0]
+                third_most_recent = timestamps[2]
+                time_diff = (most_recent - third_most_recent).total_seconds() / 3600  # hours
+                data["recent_activity_burst"] = time_diff <= 24
+        
+        # Signal 4: Property sharing activity
+        data["active_property_sharing"] = data.get("properties_shared", 0) >= 2
+
+
+    # DEBUG: Show sample stats
+    if stats:
+        # Show stats for person 5883 (known to have activity)
+        sample_pid = "5883" if "5883" in stats else list(stats.keys())[0]
+        sample_stats = stats[sample_pid]
+        logger.info(f"=== DEBUG Sample stats for person {sample_pid} ===")
+        logger.info(f"  website_visits: {sample_stats.get('website_visits', 0)}")
+        logger.info(f"  website_visits_last_7: {sample_stats.get('website_visits_last_7', 0)}")
+        logger.info(f"  properties_viewed: {sample_stats.get('properties_viewed', 0)}")
+        logger.info(f"  properties_viewed_last_7: {sample_stats.get('properties_viewed_last_7', 0)}")
+        logger.info(f"  properties_favorited: {sample_stats.get('properties_favorited', 0)}")
+        logger.info(f"  calls_inbound: {sample_stats.get('calls_inbound', 0)}")
+        logger.info(f"  calls_outbound: {sample_stats.get('calls_outbound', 0)}")
+        logger.info(f"  avg_price_viewed: {sample_stats.get('avg_price_viewed', 'None')}")
+        logger.info(f"=== END DEBUG ===")
+
+
     logger.info(f"✓ Built statistics for {len(stats)} people")
     return dict(stats)
 
@@ -848,15 +965,19 @@ def compute_daily_activity_stats(
         
         stats["total_events_today"] += 1
         
-        event_type = event.get("type", "")
+        # Normalize event type
+        event_type_raw = event.get("type", "")
+        event_type = event_type_raw.lower().replace(" ", "_")
         pid = event.get("personId")
+        if pid:
+            pid = str(pid)
         
-        if event_type == "website":
+        if event_type == "visited_website":
             stats["website_visits_today"] += 1
             if pid:
                 stats["unique_visitors_today"].add(pid)
         
-        elif event_type == "property_viewed":
+        elif event_type == "viewed_property":
             stats["properties_viewed_today"] += 1
         
         if pid:
@@ -896,9 +1017,10 @@ CONTACTS_HEADER = [
     "properties_favorited", "properties_shared", "calls_outbound",
     "calls_inbound", "texts_total", "texts_inbound", "emails_received",
     "emails_sent", "heat_score", "value_score", "relationship_score",
-    "priority_score", "next_action", "next_action_date"
+    "priority_score", 
+    "intent_repeat_views", "intent_high_favorites", "intent_activity_burst", "intent_sharing",
+    "next_action", "next_action_date"
 ]
-
 
 def get_sheets_client():
     """Get Google Sheets client"""
@@ -970,7 +1092,7 @@ def build_contact_rows(
         pid = person.get("id")
         pid_str = str(pid)
         
-        stats = person_stats.get(pid, {})
+        stats = person_stats.get(pid_str, {})
         saved = persisted_actions.get(pid_str, {})
         
         # Calculate days since last touch
@@ -985,6 +1107,14 @@ def build_contact_rows(
             days_since = 365
         
         # Calculate scores
+        # Build intent signals dict
+        intent_signals = {
+            "repeat_property_views": stats.get("repeat_property_views", False),
+            "high_favorite_count": stats.get("high_favorite_count", False),
+            "recent_activity_burst": stats.get("recent_activity_burst", False),
+            "active_property_sharing": stats.get("active_property_sharing", False),
+        }
+        
         heat_score, _ = scorer.calculate_heat_score(
             website_visits_7d=int(stats.get("website_visits_last_7", 0)),
             properties_viewed_7d=int(stats.get("properties_viewed_last_7", 0)),
@@ -992,9 +1122,11 @@ def build_contact_rows(
             properties_shared=int(stats.get("properties_shared", 0)),
             calls_inbound=int(stats.get("calls_inbound", 0)),
             texts_inbound=int(stats.get("texts_inbound", 0)),
-            days_since_last_touch=days_since
+            days_since_last_touch=days_since,
+            intent_signals=intent_signals
         )
-        
+
+       
         value_score, _ = scorer.calculate_value_score(
             avg_price_viewed=float(stats.get("avg_price_viewed", 0) or 0),
             price_std_dev=float(stats.get("price_view_std_dev", 0) or 0),
@@ -1047,6 +1179,10 @@ def build_contact_rows(
             value_score,
             relationship_score,
             priority_score,
+            "✓" if stats.get("repeat_property_views") else "",
+            "✓" if stats.get("high_favorite_count") else "",
+            "✓" if stats.get("recent_activity_burst") else "",
+            "✓" if stats.get("active_property_sharing") else "",
             saved.get("next_action", ""),
             saved.get("next_action_date", ""),
         ]
